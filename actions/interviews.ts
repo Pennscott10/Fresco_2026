@@ -1,7 +1,11 @@
 'use server';
 
 import { createId } from '@paralleldrive/cuid2';
-import { Prisma, type Interview, type Protocol } from '~/lib/db/generated/client';
+import {
+  Prisma,
+  type Interview,
+  type Protocol,
+} from '~/lib/db/generated/client';
 import { cookies } from 'next/headers';
 import trackEvent from '~/lib/analytics';
 import { safeRevalidateTag } from '~/lib/cache';
@@ -15,7 +19,6 @@ import { resequenceIds } from '~/lib/network-exporters/formatters/session/resequ
 import type {
   ExportOptions,
   ExportReturn,
-  FormattedSession,
 } from '~/lib/network-exporters/utils/types';
 import { getAppSetting } from '~/queries/appSettings';
 import { getInterviewsForExport } from '~/queries/interviews';
@@ -86,32 +89,24 @@ export const updateExportTime = async (interviewIds: Interview['id'][]) => {
   }
 };
 
-export const prepareExportData = async (interviewIds: Interview['id'][]) => {
-  await requireApiAuth();
-
-  const interviewsSessions = await getInterviewsForExport(interviewIds);
-
-  const protocolsMap = new Map<string, Protocol>();
-  interviewsSessions.forEach((session) => {
-    protocolsMap.set(session.protocol.hash, session.protocol);
-  });
-
-  const formattedProtocols: InstalledProtocols =
-    Object.fromEntries(protocolsMap);
-  const formattedSessions = formatExportableSessions(interviewsSessions);
-
-  return { formattedSessions, formattedProtocols };
-};
-
-export const exportSessions = async (
-  formattedSessions: FormattedSession[],
-  formattedProtocols: InstalledProtocols,
+export const exportInterviews = async (
   interviewIds: Interview['id'][],
   exportOptions: ExportOptions,
 ): Promise<ExportReturn> => {
   await requireApiAuth();
 
   try {
+    const interviewsSessions = await getInterviewsForExport(interviewIds);
+
+    const protocolsMap = new Map<string, Protocol>();
+    interviewsSessions.forEach((session) => {
+      protocolsMap.set(session.protocol.hash, session.protocol);
+    });
+
+    const formattedProtocols: InstalledProtocols =
+      Object.fromEntries(protocolsMap);
+    const formattedSessions = formatExportableSessions(interviewsSessions);
+
     const result = await Promise.resolve(formattedSessions)
       .then(insertEgoIntoSessionNetworks)
       .then(groupByProtocolProperty)
