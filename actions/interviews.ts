@@ -1,6 +1,7 @@
 'use server';
 
 import { createId } from '@paralleldrive/cuid2';
+import { unlink } from 'node:fs/promises';
 import {
   Prisma,
   type Interview,
@@ -95,7 +96,11 @@ export const exportInterviews = async (
 ): Promise<ExportReturn> => {
   await requireApiAuth();
 
+  const tempFilePaths: string[] = [];
+  let exportStage = 'initialisation';
+
   try {
+    exportStage = 'fetching interviews from database';
     const interviewsSessions = await getInterviewsForExport(interviewIds);
 
     const protocolsMap = new Map<string, Protocol>();
@@ -107,13 +112,27 @@ export const exportInterviews = async (
       Object.fromEntries(protocolsMap);
     const formattedSessions = formatExportableSessions(interviewsSessions);
 
-    const result = await Promise.resolve(formattedSessions)
-      .then(insertEgoIntoSessionNetworks)
-      .then(groupByProtocolProperty)
-      .then(resequenceIds)
-      .then(generateOutputFiles(formattedProtocols, exportOptions))
-      .then(archive)
-      .then(uploadZipToUploadThing);
+    exportStage = 'generating export files';
+    const sessionsWithEgo = insertEgoIntoSessionNetworks(formattedSessions);
+    const groupedSessions = groupByProtocolProperty(sessionsWithEgo);
+    const resequencedSessions = resequenceIds(groupedSessions);
+    const exportResults = await generateOutputFiles(
+      formattedProtocols,
+      exportOptions,
+    )(resequencedSessions);
+
+    exportResults.forEach((result) => {
+      if (result.success) {
+        tempFilePaths.push(result.filePath);
+      }
+    });
+
+    exportStage = 'creating zip archive';
+    const archiveResult = await archive(exportResults);
+    tempFilePaths.push(archiveResult.path);
+
+    exportStage = 'uploading zip file';
+    const result = await uploadZipToUploadThing(archiveResult);
 
     void trackEvent({
       type: 'DataExported',
@@ -132,6 +151,7 @@ export const exportInterviews = async (
     // eslint-disable-next-line no-console
     console.error(error);
     const e = ensureError(error);
+
     void trackEvent({
       type: 'Error',
       name: e.name,
@@ -139,15 +159,64 @@ export const exportInterviews = async (
       stack: e.stack,
       metadata: {
         path: '~/actions/interviews.ts',
+        exportStage,
+        interviewCount: interviewIds.length,
+        exportOptions,
       },
     });
 
+    const userMessage = getExportErrorMessage(e, exportStage);
+
     return {
       status: 'error',
-      error: `Error during data export: ${e.message}`,
+      error: userMessage,
     };
+  } finally {
+    await cleanupTempFiles(tempFilePaths);
   }
 };
+
+function getExportErrorMessage(error: Error, stage: string): string {
+  const message = error.message.toLowerCase();
+
+  if (message.includes('heap') || message.includes('memory')) {
+    return `Export ran out of memory while ${stage}. Try exporting fewer interviews at a time.`;
+  }
+
+  if (message.includes('enospc') || message.includes('no space')) {
+    return `Export ran out of disk space while ${stage}. Please free up server storage and try again.`;
+  }
+
+  if (
+    message.includes('timeout') ||
+    message.includes('timedout') ||
+    message.includes('timed out') ||
+    message.includes('etimedout') ||
+    message.includes('econnreset')
+  ) {
+    return `Export timed out while ${stage}. Try exporting fewer interviews at a time.`;
+  }
+
+  if (
+    message.includes('econnrefused') ||
+    message.includes('database') ||
+    message.includes('prisma')
+  ) {
+    return `Database connection failed while ${stage}. Please try again later.`;
+  }
+
+  return `Export failed while ${stage}: ${error.message}`;
+}
+
+async function cleanupTempFiles(filePaths: string[]) {
+  await Promise.allSettled(
+    filePaths.map((filePath) =>
+      unlink(filePath).catch(() => {
+        // Ignore cleanup errors — files may already be deleted
+      }),
+    ),
+  );
+}
 
 export async function createInterview(data: CreateInterview) {
   const { participantIdentifier, protocolId } = data;
