@@ -97,10 +97,9 @@ export const exportInterviews = async (
   await requireApiAuth();
 
   const tempFilePaths: string[] = [];
-  let exportStage = 'initialisation';
+  let exportStage = 'fetching interviews from database';
 
   try {
-    exportStage = 'fetching interviews from database';
     const interviewsSessions = await getInterviewsForExport(interviewIds);
 
     const protocolsMap = new Map<string, Protocol>();
